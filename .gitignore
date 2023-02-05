@@ -9,7 +9,6 @@ make/*.in
 make/Cgen-obj.mk
 
 # Dev
-dev/
 TAGS
 tags
 cscope*
