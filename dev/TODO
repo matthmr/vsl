@@ -1,0 +1,25 @@
+../symtab.c:5:// TODO: implement lexical scoping
+../symtab.c:63:// TODO: stub
+../symtab.c:355:  // TODO: another field, `::com_mod', that contains similar information to
+../symtab.c:406:// TODO: we could probably return `struct lisp_sym_ret' like `get' does
+../lex.c:13:// TODO: try to make these global variables stack-local (somehow)
+../lex.c:273:    DB_MSG("TODO: implement top level symbol resolution");
+../cgen_primtab.c:164:      // TODO: make this optional
+../symtab.h:132:  struct lisp_sym* master; // TODO: see `stack.c's TODO
+../symtab.h:152:// TODO: right now, these functions take the `symtab` variable globally.
+../stack.c:4:// TODO: some functions may change variables through a pointer
+../stack.c:8:// TODO: stub
+../stack.c:68:  // TODO: this is probably wrong
+../stack.c:74:// TODO: make the frame function check the grammar
+../stack.c:138:    // TODO: i think this is wrong. the `frame_var' function
+../pool.h:99:      // TODO: even though this has no way to get leaked,
+../prim.h:30:  void* master; // TODO
+../err.c:3:// TODO: make this more verbose
+../err.c:4:// TODO: make this optional
+../sexp.c:4:// TODO: the tree going to become a generic memory pool
+../sexp.c:315:  // TODO: stage 1 done twice *should* be an error, implement that
+../sexp.c:454:// TODO: this is wrong with the new lexer; please refactor
+../prevsl.c:12:// TODO: these
+../libvsl.c:3:// TODO: read from file as argument
+../libvsl.c:4:// TODO: a branch without `cgen' or `prim' (or with being them empty)
+../libvsl.h:16:// TODO: we probably need this for the frontend but i'm way to tired to fix it
