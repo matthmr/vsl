@@ -15,6 +15,7 @@ cscope*
 
 # PREVSL
 lisp.c
+!dev/c/lisp.c
 lisp
 prevsl
 
