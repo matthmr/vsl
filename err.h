@@ -16,16 +16,19 @@ enum ecode {
   EREAD,
   EFRONTEND,
   EARGTOOBIG,
+  EARGTOOSMALL,
   EISNOTFUNC,
   ENOHASHCHANGING,
   EIDTOOBIG,
   EOOM,
   ENOTFOUND,
   EHASHERR,
+  ENOTALLOWED,
 };
 
-#  define ECODE_LEN (EHASHERR)
-#  define ERROR (-1u)
+#  define ECODE_BEGIN (EOK)
+#  define ECODE_END   (ENOTALLOWED)
+#  define ERROR       (-1u)
 
 #  if ECODE_LEN == ERROR
 #    error "[ !! ] libvsl: Too many errors (how did this even happen?)"

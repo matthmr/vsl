@@ -22,7 +22,7 @@
           need to fix the length of the identifiers. 94 characters should be
           enough, for example:
 
-          aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+          the-quick-brown-fox-jumps-over-the-lazy-dog-can-fit-in-the-name-and-i-still-got-some-size-left
  */
 // maximum number of characters per symbol
 #  define SYMTAB_MAX_SYM (94)
@@ -58,12 +58,21 @@ struct lisp_hash {
 };
 
 enum lisp_sym_typ {
-  __LISP_NULL = 0,
+  __LISP_VAR_NO_TYPE = 0,
 
-  __LISP_SYM,
-  __LISP_FUN,
   __LISP_CLISP_SYM,
   __LISP_CLISP_FUN,
+
+  __LISP_VAR_GEN,
+
+  __LISP_VAR_SYM,
+  __LISP_VAR_SEXP,
+  __LISP_VAR_LEXP,
+
+  __LISP_VAR_SYMP,
+  __LISP_VAR_HASH,
+
+  __LISP_VAR_FUN,
 };
 
 #  define INFINITY (-1u)
@@ -84,20 +93,22 @@ struct lisp_sym {
   void*             dat;  /** @dat:  data for the symbol    */
   enum lisp_sym_typ typ;  /** @typ:  type of the symbol     */
 
-  uint litr[2];
-  uint size[2];
+  uint size[2];           /** @size: argument range; masked */
+  uint litr[2];           /** @litr: literal range: < size  */
 };
 
 ////////////////////////////////////////////////////////////////////////////////
 
-typedef bool (*in_between_t)  (struct lisp_sym* ppm, struct lisp_hash hash,
-                               uint lower, uint upper);
-typedef bool (*ex_between_t)  (struct lisp_sym* ppm, struct lisp_hash hash,
-                               uint lower, uint upper);
-typedef bool (*repeats_t)     (struct sort_t* sort);
-typedef uint (*yield_t)       (struct lisp_sym* ppm, uint i);
-typedef bool (*eq_t)          (uint n, struct lisp_hash hash);
-typedef bool (*lt_t)          (uint n, struct lisp_hash hash);
+struct sort_t;
+
+typedef bool (*in_between_t) (struct lisp_sym* ppm, struct lisp_hash hash,
+                              uint lower, uint upper);
+typedef bool (*ex_between_t) (struct lisp_sym* ppm, struct lisp_hash hash,
+                              uint lower, uint upper);
+typedef bool (*repeats_t)    (struct sort_t* sort);
+typedef uint (*yield_t)      (struct lisp_sym* ppm, uint i);
+typedef bool (*eq_t)         (uint n, struct lisp_hash hash);
+typedef bool (*lt_t)         (uint n, struct lisp_hash hash);
 
 struct sort_t {
   in_between_t  in_between;
@@ -114,8 +125,8 @@ struct sort_t {
 ////////////////////////////////////////////////////////////////////////////////
 
 struct clisp_sym {
-  const char*     str; /** @str: the C-string representation of the symbol   */
-  struct lisp_sym sym; /** @sym: the symbol template for the symtab          */
+  const char*     str; /** @str: the C-string representation of the symbol */
+  struct lisp_sym sym; /** @sym: the symbol template for the symtab        */
 };
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -126,8 +137,18 @@ struct lisp_hash_ret {
 };
 
 struct lisp_sym_ret {
-  struct lisp_sym* master; // TODO: see `stack.c's TODO
+  struct lisp_sym* master;
   int slave;
+};
+
+/** used for stack calls:
+    - the ret types @p and @pv are needed to change the value of the
+      symbol directly
+    - the value @m is used for speed ups (no need to dereference)
+*/
+struct lisp_symc_ret {
+  struct lisp_sym_ret p, pv;
+  struct lisp_sym     m;
 };
 
 enum lisp_sort_stat {

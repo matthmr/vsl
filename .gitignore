@@ -18,6 +18,7 @@ cscope*
 lisp.c
 !dev/c/lisp.c
 lisp
+lisp-*
 prevsl
 
 # CGEN

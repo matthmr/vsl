@@ -1,6 +1,5 @@
-#include "symtab.h"
+#include "symtab.h" // also includes `pool.h'
 #include "debug.h"
-#include "err.h"
 
 // TODO: implement lexical scoping
 
@@ -65,6 +64,13 @@ static inline int s(int t) {
 
 static inline int mod_norm(int val, int len) {
   return val - s(len);
+}
+
+static inline bool hash_eq(struct lisp_hash hash_a, struct lisp_hash hash_b) {
+  return (hash_a.sum == hash_b.sum)  &&
+    (hash_a.psum     == hash_b.psum) &&
+    (hash_a.len      == hash_b.len)  &&
+    (hash_a.com_part == hash_b.com_part);
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -289,7 +295,8 @@ next:
   lisp_symtab_sort_backprog(base, base_idx, smstat.pp, smstat.idx);
 
   if (sort->next) {
-    lisp_symtab_sort_base(smstat.pp, smstat.idx, hash, sort->next);
+    assert(lisp_symtab_sort_base(smstat.pp, smstat.idx, hash, sort->next) == 0,
+           OR_ERR());
   }
   else {
     defer(err(EHASHERR));
@@ -336,7 +343,7 @@ lisp_symtab_get_sorted(POOL_T* pp, struct lisp_hash hash,
             goto next;
           }
 
-          ret.master = &mem[IDX_HM(idx)];
+          ret.master = (mem+i);
           defer();
         }
       }
@@ -380,9 +387,9 @@ struct lisp_hash_ret inc_hash(struct lisp_hash hash, char c) {
 
   ASCII_NORM(c);
 
-  uchar prt_pre = hash.psum % SYMTAB_CELL;
-  hash.sum  += c*hash_i;
-  hash.psum += c;
+  uchar prt_pre  = hash.psum % SYMTAB_CELL;
+  hash.sum      += c*hash_i;
+  hash.psum     += c;
   uchar prt_post = c;
 
   hash_i *= SYMTAB_PRIM;
@@ -455,15 +462,9 @@ static struct lisp_sym_ret lisp_symtab_get_for_set(struct lisp_hash hash) {
   DB_FMT("[ == ] symtab(get-for-set): trying to get index %d", idx);
 
   ret = lisp_symtab_get_sorted(base_pp, hash, sort_entry);
-  assert_for(ret.slave == 0, 1, ret.slave);
 
-  struct lisp_hash ghash = ret.master->hash;
-
-  assert_for(
-    (ghash.sum      == hash.sum)  &&
-    (ghash.psum     == hash.psum) &&
-    (ghash.len      == hash.len)  &&
-    (ghash.com_part == hash.com_part), 1, ret.slave);
+  assert_for(ret.slave == 0 && hash_eq(ret.master->hash, hash),
+             1, ret.slave);
 
   done_for(ret);
 }
@@ -499,7 +500,6 @@ int lisp_symtab_set(struct lisp_sym sym) {
   mpp->mem[IDX_HM(pp_idx)] = sym;
 
   ret = lisp_symtab_sort(mpp, pp_idx, sym.hash);
-
   assert(ret == 0, OR_ERR());
 
   done_for(ret);
@@ -518,15 +518,8 @@ struct lisp_sym_ret lisp_symtab_get(struct lisp_hash hash) {
   DB_FMT("[ == ] symtab: trying to get index %d", idx);
 
   ret = lisp_symtab_get_sorted(base_pp, hash, sort_entry);
-  assert_for(ret.slave == 0, err(ENOTFOUND), ret.slave);
-
-  struct lisp_hash ghash = ret.master->hash;
-
-  assert_for(
-    (ghash.sum      == hash.sum)  &&
-    (ghash.psum     == hash.psum) &&
-    (ghash.len      == hash.len)  &&
-    (ghash.com_part == hash.com_part), err(ENOTFOUND), ret.slave);
+  assert_for(ret.slave == 0 && hash_eq(ret.master->hash, hash),
+             err(ENOTFOUND), ret.slave);
 
   done_for(ret);
 }

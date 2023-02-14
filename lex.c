@@ -1,7 +1,6 @@
 #include <unistd.h>
 
 #include "debug.h"
-#include "stack.h" // also includes `sexp.h'
 #include "lex.h"   // also includes `symtab.h'
 
 #undef LOCK_POOL_THREAD
@@ -17,278 +16,305 @@ static struct lisp_lex lex  = {0};
 static int iofd             = 0;
 static char iobuf[IOBLOCK];
 
-// I fucking hate C
-static int parse_bytstream_base(struct lisp_stack* stack);
-
-static inline struct lisp_lex
-lisp_lex_ev(struct lisp_lex lex, enum lisp_lex_ev ev) {
-  if (ev & __LISP_SYMBOL_OUT) {
-    lex.master.ev &= ~__LISP_SYMBOL_IN;
-    lex.master.ev |= __LISP_SYMBOL_OUT;
+static void lisp_lex_ev(enum lisp_lex_ev ev) {
+  if (ev & __LISP_EV_SYMBOL_OUT) {
+    lex.master.ev &= ~__LISP_EV_SYMBOL_IN;
+    lex.master.ev |= __LISP_EV_SYMBOL_OUT;
     inc_hash_done(&lex.master.hash);
-    DB_MSG("<- EV: symbol out");
+    DB_MSG("[ == ] lex(ev): symbol out");
   }
 
-  if (ev & __LISP_PAREN_IN) {
-    lex.master.ev |= __LISP_PAREN_IN;
-    if (lex.master.ev & __LISP_SYMBOL_IN) {
-      lex = lisp_lex_ev(lex, __LISP_SYMBOL_OUT);
+  else if (ev & __LISP_EV_PAREN_IN) {
+    lex.master.ev |= __LISP_EV_PAREN_IN;
+    DB_MSG("[ == ] lex(ev): paren in");
+    if (lex.master.ev & __LISP_EV_SYMBOL_IN) {
+      lisp_lex_ev(__LISP_EV_SYMBOL_OUT);
     }
     ++lex.master.paren;
   }
 
-  else if (ev & __LISP_PAREN_OUT) {
-    lex.master.ev |= __LISP_PAREN_OUT;
-    if (lex.master.ev & __LISP_SYMBOL_IN) {
-      lex = lisp_lex_ev(lex, __LISP_SYMBOL_OUT);
+  else if (ev & __LISP_EV_PAREN_OUT) {
+    lex.master.ev |= __LISP_EV_PAREN_OUT;
+    DB_MSG("[ == ] lex(ev): paren out");
+
+    if (lex.master.ev & __LISP_EV_SYMBOL_IN) {
+      lisp_lex_ev(__LISP_EV_SYMBOL_OUT);
     }
 
-    DB_MSG("<- EV: paren out");
-
-    if (lex.master.paren) {
-      --lex.master.paren;
+    if (lex.master.paren == 0) {
+      lex.slave = err(EIMBALANCED);
+      return;
     }
-    else {
-      defer_for_as(lex.slave, err(EIMBALANCED));
-    }
-
-    // if (!lex.master.paren) {
-    //   lex.slave = lisp_do_sexp(&POOL);
-    // }
   }
-
-  done_for(lex);
 }
 
-static inline struct lisp_lex
-lisp_lex_whitespace(struct lisp_lex lex) {
-  if (lex.master.ev & __LISP_SYMBOL_IN) {
-    lex = lisp_lex_ev(lex, __LISP_SYMBOL_OUT);
-
-    assert_for(lex.slave == 0, OR_ERR(), lex.slave);
+static inline void lisp_lex_whitespace(void) {
+  if (lex.master.ev & __LISP_EV_SYMBOL_IN) {
+    lisp_lex_ev(__LISP_EV_SYMBOL_OUT);
   }
-
-  done_for(lex);
 }
 
-static inline struct lisp_lex
-lisp_lex_csym(struct lisp_lex lex, char c) {
-  lex.master.ev |= __LISP_SYMBOL_IN;
+static inline void lisp_lex_csym(char c) {
+  lex.master.ev |= __LISP_EV_SYMBOL_IN;
 
   if (!__LISP_ALLOWED_IN_NAME(c)) {
-    defer_for_as(lex.slave, 1);
+    lex.slave = err(ENOTALLOWED);
+    return;
   }
 
-  else {
-    struct lisp_hash_ret ret = inc_hash(lex.master.hash, c);
-    lex.master.hash = ret.master;
-    lex.slave       = ret.slave;
-  }
+  struct lisp_hash_ret ret = inc_hash(lex.master.hash, c);
+  lex.master.hash = ret.master;
+  lex.slave       = ret.slave;
 
-  DB_FMT("[ == ] lex: character (%c) (%d)", c, lex.master.hash.sum);
-
-  // it's *very* unlikely `inc_hash' is going to error, but if it does,
-  // the user may be a bit puzzled as for why libvsl erroed, as it
-  // does not send an error message. let's call this an easteregg
-  done_for(lex);
+  DB_FMT("[ == ] lex(c): symbol char (%c) (%d)", c, lex.master.hash.sum);
 }
 
-static int lisp_lex_bytstream(struct lisp_stack* stack) {
-  int  ret  = 0;
-  uint size = 0;
+struct lisp_lex_ev_ret {
+  bool               master;
+  enum lisp_lex_stat slave;
+};
 
-  uint litparen = lex.master.paren;
+static struct lisp_lex_ev_ret
+lisp_lex_handle_ev(enum lisp_lex_ev lev, struct lisp_stack* stack,
+                   bool prime, uint c_idx) {
+  struct lisp_lex_ev_ret evret = {
+    .master = prime,
+    .slave  = 0,
+  };
 
-  static bool prime = false;
+  enum lisp_stack_ev sev = stack->ev;
 
-feed:
-  size = lex.master.size;
+  // ...( -> push
+  if (lev & __LISP_EV_PAREN_IN) {
+    lex.master.cb_idx  = IDX_MH(c_idx);
+    lex.master.ev     &= ~__LISP_EV_PAREN_IN;
 
-  for (uint i = lex.master.cb_i; i < size; i++) {
-    char c = iobuf[i];
-
-    // main character switch
-    switch (c) {
-    case __LISP_PAREN_OPEN:
-      DB_MSG("-> EV: paren open");
-      lex = lisp_lex_ev(lex, __LISP_PAREN_IN);
-      break;
-    case __LISP_PAREN_CLOSE:
-      DB_MSG("<- EV: paren close");
-      lex = lisp_lex_ev(lex, __LISP_PAREN_OUT);
-      break;
-    case __LISP_WHITESPACE:
-      lex = lisp_lex_whitespace(lex);
-      break;
-    default:
-      lex = lisp_lex_csym(lex, c);
-      break;
+    if (STACK_QUOT(sev)) {
+      // lisp_sexp_node_add(&SEXP_POOLP);
+      defer_for_as(evret.slave, 0);
+    }
+    else {
+      stack->typ.lex.paren = (lex.master.paren+1);
     }
 
-    assert(lex.slave == 0, OR_ERR());
-
-    enum lisp_lex_ev ev = lex.master.ev;
-
-    // lex token callback
-    if (ev & __LISP_PAREN_IN) {            /* ...( -> push     */
-      lex.master.cb_i  = (i+1);
-      lex.master.ev   &= ~__LISP_PAREN_IN;
-
-      if (STACK_QUOT(ev)) {
-        lisp_sexp_node_add(&SEXP_POOLP);
-        continue;
-      }
-
+    if (prime) {
       /** the core VSL interpreter doesn't allow function names to be the
           return value of a hash-changing function, e.g:
 
-             (add-prefix sym) -> sym-prefix
-             ((add-prefix function) arg) -> (function-prefix arg) -> ...
+          (add-prefix sym) -> sym-prefix
+          ((add-prefix function) arg) -> (function-prefix arg) -> ...
 
-         the code above is not allowed because the stack schema is unable
-         to communicate with its parents
+          the code above is not allowed because the stack schema is unable
+          to communicate with its parents
       */
-      if (prime) {
-        defer_as(err(ENOHASHCHANGING));
-      }
-      else {
-        prime      = true;
-        stack->ev |= __STACK_PUSH_FUNC;
-        continue;
-      }
+      defer_for_as(evret.slave, err(ENOHASHCHANGING));
     }
+    else {
+      DB_MSG("[ == ] lex(ev): prime for stack");
+      evret.master  = true;
+      defer_for_as(evret.slave, 0);
+    }
+  }
 
-    else if (ev & __LISP_SYMBOL_OUT) {       /* primed:     ...a -> push
-                                                not primed: ...a -> push_var */
-      lex.master.cb_i  = (i+1);
-      lex.master.ev   &= ~__LISP_SYMBOL_OUT;
+  // primed:     ...a -> push_func
+  // not primed: ...a -> push_var
+  else if (lev & __LISP_EV_SYMBOL_OUT) {
+    /** we prioritize `SYMBOL_OUT` over `PARENT_OUT`, but the latter can also
+        trigger the former. If that happens, we *don't* send anything to back
+        the frame *or* to the base, we just clear the `symbol_out' state and set
+        the callback index to `c_idx', which would be `)'. When the frame calls
+        us back, we immediately pop.
+    */
 
-      if (STACK_QUOT(ev)) {
-        lisp_sexp_sym(&SEXP_POOLP, lex.master.hash);
-        hash_done(&lex.master.hash);
+    lex.master.cb_idx  = c_idx;
+    lex.master.ev     &= ~__LISP_EV_SYMBOL_OUT;
 
-        if (litparen == lex.master.paren) {
-          stack->ev &= ~__STACK_LIT;
-          // lisp_sexp_save(SEXP_POOLP, stack);
-          defer_as(0);
-        }
-        continue;
-      }
-
-      if (prime) {
-        prime      = false;
-        stack->ev |= __STACK_PUSH_FUNC;
-
-        // clean in before defering
-        if (ev & __LISP_PAREN_OUT) {
-          lex.master.ev &= ~__LISP_PAREN_OUT;
-        }
-      }
-      else {
-        stack->ev |= __STACK_PUSH_VAR;
-
-        if (ev & __LISP_PAREN_OUT) {
-          lex.master.ev &= ~__LISP_PAREN_OUT;
-          goto close_pop;
-        }
-      }
-
+    if (STACK_QUOT(sev)) {
       stack->typ.lex.hash = lex.master.hash;
       hash_done(&lex.master.hash);
-      defer_as(0);
+
+      if ((lex.master.paren+1) == stack->typ.lex.paren) {
+        // go back to the frame
+        defer_for_as(evret.slave, __LEX_DEFER);
+      }
+      else {
+        // TODO: what?
+        defer_for_as(evret.slave, __LEX_INPUT);
+      }
     }
 
-    else if (ev & __LISP_PAREN_OUT) {      /* ...) -> pop      */
-      lex.master.cb_i  = (i+1);
-
-      lex.master.ev   &= ~__LISP_PAREN_OUT;
-
-      if (STACK_QUOT(ev)) {
-        if (litparen == lex.master.paren) {
-          stack->ev &= ~__STACK_LIT;
-          // lisp_sexp_save(SEXP_POOLP, stack);
-          defer_as(0);
-        }
-        else {
-          lisp_sexp_end(SEXP_POOLP);
-        }
-
-        continue;
-      }
-
-      if (prime) {
-        prime      = false;
-        stack->ev |= __STACK_EMPTY;
-        continue;
-      }
-
-close_pop:
-      stack->ev   |= __STACK_POP;
-
-      defer_as(0);
+    if (prime) {
+      evret.master  = false;
+      stack->ev    |= __STACK_PUSH_FUNC;
     }
+    else {
+      stack->ev    |= __STACK_PUSH_VAR;
+    }
+
+    stack->typ.lex.hash = lex.master.hash;
+    hash_done(&lex.master.hash);
+    defer_for_as(evret.slave, __LEX_DEFER);
   }
 
-  // didn't finish the expression: call the base function asking
-  // for more bytes
-  if (lex.master.paren || (lex.master.ev & __LISP_SYMBOL_IN)) {
-    lex.master.ev |= __LISP_FEED;
-    assert(parse_bytstream_base(stack) == 0, OR_ERR());
-    goto feed;
+  // ...) -> pop
+  else if (lev & __LISP_EV_PAREN_OUT) {
+    lex.master.cb_idx  = IDX_MH(c_idx);
+    lex.master.ev     &= ~__LISP_EV_PAREN_OUT;
+    stack->ev         |= __STACK_POP;
+
+    --lex.master.paren;
+
+    if (STACK_QUOT(sev)) {
+      if ((lex.master.paren+1) == stack->typ.lex.paren) {
+        defer_for_as(evret.slave, __LEX_DEFER);
+      }
+
+      else if ((lex.master.paren+1) < stack->typ.lex.paren) {
+        defer_for_as(evret.slave, __LEX_POP_LITR);
+      }
+
+      else {
+        defer_for_as(evret.slave, 0);
+      }
+    }
+
+    if (prime) {
+      evret.master  = false;
+      // stack->ev |= __STACK_EMPTY;
+      // defer_for_as(evret.slave, 0); // wtf?
+    }
+
+    defer_for_as(evret.slave, __LEX_DEFER);
   }
+
+  done_for(evret);
+}
+
+static inline void lisp_lex_c(char c) {
+  switch (c) {
+  case __LISP_C_PAREN_OPEN:
+    DB_MSG("[ == ] lex(c): paren open");
+    lisp_lex_ev(__LISP_EV_PAREN_IN);
+    break;
+  case __LISP_C_PAREN_CLOSE:
+    DB_MSG("[ == ] lex(c): paren close");
+    lisp_lex_ev(__LISP_EV_PAREN_OUT);
+    break;
+  case __LISP_C_WHITESPACE:
+    lisp_lex_whitespace();
+    break;
+  default:
+    lisp_lex_csym(c);
+    break;
+  }
+}
+
+static int parse_bytstream_feed(void) {
+  int ret = 0;
+
+  lex.master.size = read(iofd, iobuf, IOBLOCK);
+  assert(lex.master.size != -1, err(EREAD));
+
+  lex.master.cb_idx = 0;
 
   done_for(ret);
 }
 
+/** at any given time, there's at most *two* of this function in the call stack:
+      - one as the stack base
+      - another as a callback from the lexer asking for more bytes
+ */
 static int parse_bytstream_base(struct lisp_stack* stack) {
-  int ret = 0;
+  int ret = parse_bytstream_feed();
 
-feed:
-  // feed `iobuf' with data from file descriptor `fd'
-  lex.master.size = read(iofd, iobuf, IOBLOCK);
-  lex.master.cb_i = 0;
+  assert(ret == 0, OR_ERR());
 
-  assert(lex.master.size != -1, err(EREAD));
+  // feed `iobuf' to the lexer, listen for callbacks
+lex:
+  ret = lisp_lex_bytstream(stack);
 
-  /** lexer exited with `feed' callback:
-        immediately exit successfully, let lexer
-        continue */
-  if (lex.master.ev & __LISP_FEED) {
-    lex.master.ev   &= ~__LISP_FEED;
+  // no error, no input: exit
+  if (ret == __LEX_INPUT) {
     defer_as(0);
   }
 
-  // feed `iobuf' to the lexer, listen for callbacks
-  assert(lisp_lex_bytstream(stack) == 0, OR_ERR());
+  assert(ret == __LEX_OK || ret == __LEX_DEFER, OR_ERR());
 
   /** NOTE: these are the only callbacks issued by `lisp_lex_bytstream'
             that `parse_bytstream_base' can handle, the rest are handled
             by the stack frame
    */
-  if (stack->ev & __STACK_PUSH_FUNC) {     /* push function */
+
+  // push function
+  if (STACK_PUSHED_FUNC(stack->ev)) {
     stack->ev &= ~__STACK_PUSHED_FUNC;
-    lex.slave  = lisp_stack_lex_frame(stack);
+
+    // TODO: this should return `nil'; and the stack should also know about this
+    if (stack->ev & __STACK_EMPTY) {
+      stack->ev &= ~__STACK_EMPTY;
+    }
+    else {
+      lex.slave = lisp_stack_lex_frame(stack).slave;
+    }
   }
-  else if (stack->ev & __STACK_PUSH_VAR) { /* push variable */
+
+  // push variable (top level)
+  else if (STACK_PUSHED_VAR(stack->ev)) {
+    stack->ev &= ~__STACK_PUSHED_VAR;
+
     DB_MSG("TODO: implement top level symbol resolution");
   }
 
+  // give the parent error precedence over `EIMBALANCED'
   assert(lex.slave == 0, OR_ERR());
-
-  //   the very special case of `()' as the only input passes
-  //   all checks and exists without error, but also doesn't
-  //   execute anything. It sets `__STACK_EMPTY' which would
-  //   be used by the `frame' functions, but no such frame
-  //   exists yet
   assert(lex.master.paren == 0, err(EIMBALANCED));
 
-  if (lex.master.size) {
-    stack->ev     = 0;
-    lex.master.ev = 0;
+  stack->ev     = 0;
+  lex.master.ev = 0;
 
-    hash_done(&stack->typ.lex.hash);
-    goto feed;
+  hash_done(&stack->typ.lex.hash);
+  goto lex;
+
+  done_for(ret);
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
+int lisp_lex_bytstream(struct lisp_stack* stack) {
+  static bool prime = false;
+
+  int  ret  = 0;
+  uint size = 0;
+
+  struct lisp_lex_ev_ret evret = {0};
+
+feed:
+  size = lex.master.size;
+
+  for (uint i = lex.master.cb_idx; i < size; i++) {
+    lisp_lex_c(iobuf[i]);
+    assert(lex.slave == 0, OR_ERR());
+
+    evret = lisp_lex_handle_ev(lex.master.ev, stack, prime, i);
+    prime = evret.master;
+
+    if (evret.slave < 0) {
+      defer_as(evret.slave);
+    }
+
+    assert_for(evret.slave == 0, OR_ERR(), lex.slave);
   }
+
+  if (size == 0) {
+    assert(lex.master.paren == 0 && !(lex.master.ev & __LISP_EV_SYMBOL_IN),
+           err(EIMBALANCED));
+
+    // no error but also nothing else in the buffer: ask to stop
+    defer_as(__LEX_INPUT);
+  }
+
+  assert(parse_bytstream_feed() == 0, OR_ERR());
+  goto feed;
 
   done_for(ret);
 }
@@ -297,8 +323,6 @@ int parse_bytstream(int fd) {
   iofd = fd;
 
   struct lisp_stack stack;
-
-  stack.typ.lex.cb = &lisp_lex_bytstream;
 
   lex.master.ev = 0;
   lex.slave     = 0;

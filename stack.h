@@ -5,20 +5,12 @@
 #  define LOCK_POOL_DEF
 #  define LOCK_POOL_THREAD
 
-#  include "sexp.h"
-#  include "pool.h"
+#  include "sexp.h" // also includes `symtab.h' (lock internals)
+#  include "pool.h" // also includes `err.h', `utils.h', `stdlib.h'
+#  include "prim.h" // also includes `symtab.h'
 
 struct lisp_stack;
 struct lisp_frame;
-
-/** for LEX */
-typedef int  (*lexer) (struct lisp_stack* stack);
-
-/** for SEXP */
-typedef void (*sexp_cb) (struct lisp_stack* stack);
-
-/** for both */
-typedef int  (*lisp_fun) (struct lisp_frame* frame);
 
 enum lisp_stack_ev {
   __STACK_POP        = BIT(0), /** for both */
@@ -53,15 +45,16 @@ enum lisp_stack_ev {
 #  define STACK_PUSHED(x) \
   (STACK_PUSHED_VAR(x) | (STACK_PUSHED_FUNC(x)))
 
+////////////////////////////////////////////////////////////////////////////////
+
 struct lisp_lex_stack {
-  struct lisp_hash hash; /** @hash: the current hash      */
-  lexer            cb;   /** @cb:   the callback function */
+  struct lisp_hash hash;  /** @hash:  the current hash      */
+  uint             paren; /** @paren: the paren level       */
 };
 
 struct lisp_sexp_stack {
   struct lisp_sexp* head; /** @head: the current sexp head   */
   POOL_T*           mpp;  /** @mpp:  the current pool thread */
-  sexp_cb           cb;   /** @cb:   the callback function   */
 };
 
 union lisp_stack_typ {
@@ -74,19 +67,19 @@ struct lisp_stack {
   enum lisp_stack_ev   ev;  /** @ev:   the stack event           */
 };
 
-struct lisp_frame_sym {
-  struct lisp_sym* reg; /** @reg:  the argument value register */
-  uint size;            /** @size: the minimum functional size */
-  uint i;               /** @i:    the current element index   */
+struct lisp_frame_reg {
+  struct lisp_fun_arg* _; /** @_: the argument register     */
+  uint i;                 /** @i: the current element index */
 };
 
 struct lisp_frame {
-  struct lisp_stack     stack;
-  struct lisp_frame_sym tab;
+  struct lisp_stack     stack; /** @stack: the current stack state       */
+  struct lisp_symc_ret  sym;   /** @sym:   the current function          */
+  struct lisp_frame_reg reg;   /** @reg:   the argument register         */
+  struct lisp_fun_ret   pop;   /** @pop:   the value from a function pop */
 };
 
-#  define FRAME_LEXER(frame) \
-  frame.stack.typ.lex.cb
+////////////////////////////////////////////////////////////////////////////////
 
 /**
   NOTE
@@ -111,26 +104,17 @@ struct lisp_frame {
                       lisp_lex_bytstream
                      parse_bytstream_base
  */
+void lisp_stack_sexp_push(struct lisp_stack* stack,
+                          POOL_T* mpp, struct lisp_sexp* head);
 
-/** SEXP stack -- BEGIN */
-void
-lisp_stack_sexp_push(struct lisp_stack* stack,
-                     POOL_T* mpp, struct lisp_sexp* head);
+void lisp_stack_sexp_push_var(struct lisp_stack* stack, POOL_T* mpp,
+                              struct lisp_sexp* head, enum lisp_stack_ev ev);
 
-void
-lisp_stack_sexp_push_var(struct lisp_stack* stack, POOL_T* mpp,
-                         struct lisp_sexp* head, enum lisp_stack_ev ev);
+void lisp_stack_sexp_pop(struct lisp_stack* stack,
+                         POOL_T* mpp, struct lisp_sexp* head);
 
-void
-lisp_stack_sexp_pop(struct lisp_stack* stack,
-                    POOL_T* mpp, struct lisp_sexp* head);
-/** SEXP stack -- END */
+////////////////////////////////////////////////////////////////////////////////
 
-////////////////////////////////////////////////////////////
-
-/** LEX stack -- BEGIN */
-int
-lisp_stack_lex_frame(struct lisp_stack* stack);
-/** LEX stack -- END */
+struct lisp_fun_ret lisp_stack_lex_frame(struct lisp_stack* stack);
 
 #endif
