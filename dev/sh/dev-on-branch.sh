@@ -1,7 +1,7 @@
 #!/usr/bin/sh -ex
 
 DEV_C='lisp.c'
-DEV_SH="gen-cinclude.sh gen-include.sh gen-lisp-debug-and-verbose.sh \
+DEV_SH="gen-include.sh gen-lisp-debug-and-verbose.sh \
 gen-lisp.sh gen-todo.sh"
 DEV_TST='tst0.vsl'
 
@@ -24,5 +24,5 @@ for _sh in $DEV_SH; do
 done
 
 for _tst in $DEV_TST; do
-  git sh dev:dev/tst/$_tst > dev/tst/$_c
+  git sh dev:dev/tst/$_tst > dev/tst/$_tst
 done
