@@ -6,14 +6,8 @@
 #include "prim.h"  // also includes `symtab.h'
 #include "err.h"   // also includes `utils.h'
 
-enum fecode {
-  FEOK = 0,
-};
-
-#define FECODE_BEGIN (FEOK)
-#define FECODE_END   (FEOK)
-
 static const string_s femsg[] = {
+  [FENOARGP0] = ERR_STRING("libvsl", "argp[0] couldn't be gotten"),
 };
 
 const struct clisp_sym vsl_primtab[] = {
@@ -89,7 +83,10 @@ CLISP_PRIM() {
 
   DB_MSG("-> ()");
 
-  return ret;
+  ret.master.typ = __LISP_VAR_SYM;
+  ret.master.mem.sym = argp[0].mem.sym;
+
+  done_for(ret);
 }
 
 CLISP_PRIM(set) {

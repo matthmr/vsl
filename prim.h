@@ -26,6 +26,17 @@
 
 extern const struct clisp_sym vsl_primtab[];
 
+enum fecode {
+  FEOK = 0,
+
+  FENOARGP0,
+
+  FEOK_END,
+};
+
+#define FECODE_BEGIN (FEOK)
+#define FECODE_END   (FEOK_END)
+
 enum lisp_fun_ret_t {
   __LISP_FUN_MASK = -2,  /** stack the call to the function, waiting for more
                              arguments */
