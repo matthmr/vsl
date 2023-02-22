@@ -1,4 +1,4 @@
-#!/usr/bin/sh -ex
+#!/usr/bin/bash -ex
 
 DEV_C='lisp.c'
 DEV_SH="gen-include.sh gen-lisp-debug-and-verbose.sh \
@@ -15,14 +15,14 @@ mkdir -p dev/c dev/sh dev/tst
 IFS=' '
 
 for _c in $DEV_C; do
-  git sh dev:dev/c/$_c > dev/c/$_c
+  git show dev:dev/c/$_c > dev/c/$_c
 done
 
 for _sh in $DEV_SH; do
-  git sh dev:dev/sh/$_sh > dev/sh/$_sh
+  git show dev:dev/sh/$_sh > dev/sh/$_sh
   chmod +x dev/sh/$_sh
 done
 
 for _tst in $DEV_TST; do
-  git sh dev:dev/tst/$_tst > dev/tst/$_tst
+  git show dev:dev/tst/$_tst > dev/tst/$_tst
 done
