@@ -4,6 +4,8 @@
 #include "lex.h"   // also includes `symtab.h'
 
 // TODO: try to make these global variables stack-local (somehow)
+// TODO: STACK_QUOT should also trigger PUSH and POP; right now it's only
+// triggering POP
 
 static struct lisp_lex lex = {0};
 
@@ -101,7 +103,6 @@ lisp_lex_handle_ev(enum lisp_lex_ev lev, struct lisp_stack* stack,
         if (lev & __LISP_EV_PAREN_OUT) {
           --lex.master.paren;
           lex.master.ev &= ~__LISP_EV_PAREN_OUT;
-          stack->ev     |= __STACK_POP;
           DB_FMT(" -> paren: %d", lex.master.paren);
           goto ev_paren_out_quot;
         }
@@ -208,12 +209,14 @@ ev_paren_out_quot:
         // `lex.master.paren + 1' is `stack->typ.lex.paren', but we decrement it
         if (stack->typ.lex.paren == (lex.master.paren+2)) {
           lisp_sexp_end(sexp_pp);
+          stack->ev |= __STACK_POP;
           defer_for_as(evret.slave, __LEX_DEFER);
         }
 
         defer_for_as(evret.slave, __LEX_OK);
       }
 
+      stack->ev |= __STACK_POP;
       defer_for_as(evret.slave, __LEX_DEFER);
     }
 

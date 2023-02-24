@@ -71,6 +71,7 @@ typedef struct lisp_fun_ret
 #  ifdef EXTERN_PRIM_FUNC
 CLISP_PRIM();
 CLISP_PRIM(set);
+CLISP_PRIM(ref);
 CLISP_PRIM(del);
 CLISP_PRIM(fun);
 CLISP_PRIM(lam);
@@ -87,17 +88,12 @@ CLISP_PRIM(return);
 CLISP_PRIM(goto);
 CLISP_PRIM(label);
 CLISP_PRIM(cond);
-CLISP_PRIM(behead);
-CLISP_PRIM(head);
-CLISP_PRIM(list);
 CLISP_PRIM(parent);
 CLISP_PRIM(type);
 CLISP_PRIM(set_right_child);
 CLISP_PRIM(left_child);
-CLISP_PRIM(set_sibbling);
 CLISP_PRIM(set_parent);
 CLISP_PRIM(set_left_child);
-CLISP_PRIM(ref);
 CLISP_PRIM(right_child);
 #  endif
 

@@ -31,8 +31,8 @@ void lisp_stack_sexp_pop(struct lisp_stack* stack, POOL_T* mpp,
 
 ////////////////////////////////////////////////////////////////////////////////
 
-static void lisp_stack_lex_frame_var(struct lisp_fun_arg* reg,
-                                     struct lisp_sym* sym) {
+static void lisp_stack_lex_frame_var(struct lisp_fun_arg* const restrict reg,
+                                     const struct lisp_sym* const sym) {
 
   // TODO: stub
   switch (sym->typ) {
@@ -44,8 +44,10 @@ static void lisp_stack_lex_frame_var(struct lisp_fun_arg* reg,
 }
 
 // TODO: is this *actually* the right thing to do?
-static void lisp_stack_lex_frame_lit(struct lisp_fun_arg* reg,
-                                     struct lisp_lex_stack stack_lex) {
+static inline void
+lisp_stack_lex_frame_lit(struct lisp_fun_arg* const restrict reg,
+                         const struct lisp_lex_stack stack_lex) {
+
   if (stack_lex.expr) {
     reg->mem.sexp = stack_lex.mem.sexp;
     reg->typ      = __LISP_VAR_SEXP;
@@ -56,8 +58,9 @@ static void lisp_stack_lex_frame_lit(struct lisp_fun_arg* reg,
   }
 }
 
-static void lisp_stack_lex_frame_pop(struct lisp_fun_arg* reg,
-                                     struct lisp_fun_arg pop) {
+static inline void
+lisp_stack_lex_frame_pop(struct lisp_fun_arg* const restrict reg,
+                         const struct lisp_fun_arg pop) {
 
   switch (pop.typ) {
   case __LISP_VAR_GEN:
