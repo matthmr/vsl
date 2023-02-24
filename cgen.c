@@ -6,13 +6,12 @@
 
 #include "debug.h"
 #include "cgen.h"
-#include "err.h"
 
 static string_i outbuf = {
   .idx = 0,
 };
 
-const char autogen_notice[] = \
+static const char autogen_notice[] = \
   "// THIS FILE IS AUTO-GENERATED. DO NOT EDIT\n\n";
 
 static inline void cgen_err(char* msg, uint size) {
