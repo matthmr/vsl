@@ -13,33 +13,27 @@ static int iofd = 0;
 static char iobuf[IOBLOCK];
 
 static void lisp_lex_ev(enum lisp_lex_ev ev) {
-  if (ev & __LISP_EV_SYMBOL_OUT) {
-    DB_MSG("[ == ] lex(ev): symbol out");
-
+  if (LEX_SYMBOL_OUT(ev)) {
     lex.master.ev &= ~__LISP_EV_SYMBOL_IN;
     lex.master.ev |= __LISP_EV_SYMBOL_OUT;
     inc_hash_done(&lex.master.hash);
   }
 
-  else if (ev & __LISP_EV_PAREN_IN) {
-    DB_MSG("[ == ] lex(ev): paren in");
-
+  else if (LEX_PAREN_IN(ev)) {
     lex.master.ev |= __LISP_EV_PAREN_IN;
 
     // a( -> SYMBOL_OUT, PAREN_IN; the first takes precedence. `::cb_idx' will
     // trigger PAREN_IN again
-    if (lex.master.ev & __LISP_EV_SYMBOL_IN) {
+    if (LEX_SYMBOL_IN(lex.master.ev)) {
       lisp_lex_ev(__LISP_EV_SYMBOL_OUT);
     }
   }
 
-  else if (ev & __LISP_EV_PAREN_OUT) {
-    DB_MSG("[ == ] lex(ev): paren out");
-
+  else if (LEX_PAREN_OUT(ev)) {
     lex.master.ev |= __LISP_EV_PAREN_OUT;
 
     // a) -> SYMBOL_OUT, PAREN_OUT; the first takes precedence
-    if (lex.master.ev & __LISP_EV_SYMBOL_IN) {
+    if (LEX_SYMBOL_IN(lex.master.ev)) {
       lisp_lex_ev(__LISP_EV_SYMBOL_OUT);
     }
 
@@ -52,7 +46,7 @@ static void lisp_lex_ev(enum lisp_lex_ev ev) {
 }
 
 static inline void lisp_lex_whitespace(void) {
-  if (lex.master.ev & __LISP_EV_SYMBOL_IN) {
+  if (LEX_SYMBOL_IN(lex.master.ev)) {
     lisp_lex_ev(__LISP_EV_SYMBOL_OUT);
   }
 }
@@ -75,6 +69,8 @@ static inline void lisp_lex_csym(char c) {
 static struct lisp_lex_ev_ret
 lisp_lex_handle_ev(enum lisp_lex_ev lev, struct lisp_stack* stack,
                    bool prime, uint cb_idx) {
+  register int ret = 0;
+
   struct lisp_lex_ev_ret evret = {
     .master = prime,
     .slave  = 0,
@@ -84,11 +80,8 @@ lisp_lex_handle_ev(enum lisp_lex_ev lev, struct lisp_stack* stack,
 
   // primed:     ...a -> push_func
   // not primed: ...a -> push_var
-  if (lev & __LISP_EV_SYMBOL_OUT) {
+  if (LEX_SYMBOL_OUT(lev)) {
     DB_MSG("[ == ] lex(handle): symbol_out");
-
-    // if paren_in triggers symbol out, we decrement the callback so that we
-    // can be called again
 
     lex.master.cb_idx  = IDX_MH(cb_idx);
     lex.master.ev     &= ~__LISP_EV_SYMBOL_OUT;
@@ -97,40 +90,45 @@ lisp_lex_handle_ev(enum lisp_lex_ev lev, struct lisp_stack* stack,
     hash_done(&lex.master.hash);
 
     if (STACK_QUOT(sev)) {
-      // same paren level as the function of the current literal: defer;
-      // will be saved in the frame
-      if (stack->typ.lex.paren == (lex.master.paren+1)) {
-        if (lev & __LISP_EV_PAREN_OUT) {
+      // same paren level as the function of the current literal: defer to the
+      // stack; will be saved in the frame
+      if (lex.master.paren == stack->typ.lex.paren) {
+        stack->ev |= __STACK_PUSH_VAR;
+
+        if (LEX_PAREN_OUT(lev)) {
           --lex.master.paren;
           lex.master.ev &= ~__LISP_EV_PAREN_OUT;
-          DB_FMT(" -> paren: %d", lex.master.paren);
+          DB_FMT(" -> paren--: %d", lex.master.paren);
           goto ev_paren_out_quot;
         }
-        else if (lev & __LISP_EV_PAREN_IN) {
+        else if (LEX_PAREN_IN(lev)) {
           --lex.master.cb_idx;
           lex.master.ev &= ~__LISP_EV_PAREN_IN;
         }
 
-        defer_for_as(evret.slave, __LEX_DEFER);
+        defer_as(__LEX_DEFER);
       }
 
       // bigger paren level than the function of the current literal: save in a
-      // temporary memory on the SEXP tree
-      lisp_sexp_sym(sexp_pp, stack->typ.lex.mem.hash);
+      // temporary memory on the SEXP tree (it already exists at this point).
+      ret = lisp_sexp_sym(sexp_pp, stack->typ.lex.mem.hash);
+      assert(ret == 0, OR_ERR());
 
-      if (lev & __LISP_EV_PAREN_OUT) {
+      if (LEX_PAREN_OUT(lev)) {
         --lex.master.paren;
         lex.master.ev &= ~__LISP_EV_PAREN_OUT;
-        DB_FMT(" -> paren: %d", lex.master.paren);
+        DB_FMT(" -> paren--: %d", lex.master.paren);
         goto ev_paren_out_quot;
       }
-      else if (lev & __LISP_EV_PAREN_IN) {
+      else if (LEX_PAREN_IN(lev)) {
         --lex.master.cb_idx;
         lex.master.ev &= ~__LISP_EV_PAREN_IN;
       }
 
-      defer_for_as(evret.slave, __LEX_OK);
+      defer_as(__LEX_OK);
     }
+
+    // not quoted: either push_func or push_var, depending if it's primed
 
     if (prime) {
       evret.master  = false;
@@ -140,35 +138,41 @@ lisp_lex_handle_ev(enum lisp_lex_ev lev, struct lisp_stack* stack,
       stack->ev    |= __STACK_PUSH_VAR;
     }
 
-    if (lev & __LISP_EV_PAREN_OUT) {
+    if (LEX_PAREN_OUT(lev)) {
       prime = evret.master;
       goto ev_paren_out;
     }
-    else if (lev & __LISP_EV_PAREN_IN) {
+    else if (LEX_PAREN_IN(lev)) {
       --lex.master.cb_idx;
       lex.master.ev &= ~__LISP_EV_PAREN_IN;
     }
 
-    defer_for_as(evret.slave, __LEX_DEFER);
+    defer_as(__LEX_DEFER);
   }
 
   // ...( -> push
-  else if (lev & __LISP_EV_PAREN_IN) {
+  else if (LEX_PAREN_IN(lev)) {
     DB_MSG("[ == ] lex(handle): paren_in");
 
     lex.master.cb_idx  = IDX_MH(cb_idx);
     lex.master.ev     &= ~__LISP_EV_PAREN_IN;
 
     ++lex.master.paren;
-    DB_FMT(" -> paren: %d", lex.master.paren);
+    DB_FMT(" -> paren++: %d", lex.master.paren);
 
     if (STACK_QUOT(sev)) {
-      stack->typ.lex.expr = true;
+      if (!stack->typ.lex.lit_expr) {
+        stack->typ.lex.mem.sexp = lisp_sexp_get_head();
+        stack->typ.lex.lit_expr = true;
+      }
+
       lisp_sexp_node_add(sexp_pp);
-      defer_for_as(evret.slave, __LEX_OK);
+      assert(ret == 0, OR_ERR());
+      defer_as(__LEX_OK);
     }
 
-    stack->typ.lex.paren = (lex.master.paren+1);
+    // only set the paren level if the expression is not quoted
+    stack->typ.lex.paren = lex.master.paren;
 
     if (prime) {
       /** the core VSL interpreter doesn't allow function names to be the
@@ -182,43 +186,44 @@ lisp_lex_handle_ev(enum lisp_lex_ev lev, struct lisp_stack* stack,
       */
       // TODO: ^ this is not *necessarily* true; i can probably implement this
       // in the (far) future
-      defer_for_as(evret.slave, err(ENOHASHCHANGING));
+      defer_as(err(ENOHASHCHANGING));
     }
     else {
       evret.master = true;
-      defer();
+      defer_as(__LEX_OK);
     }
   }
 
   // ...) -> pop
-  else if (lev & __LISP_EV_PAREN_OUT) {
+  else if (LEX_PAREN_OUT(lev)) {
 ev_paren_out:
     DB_MSG("[ == ] lex(handle): paren_out");
 
     lex.master.cb_idx  = IDX_MH(cb_idx);
     lex.master.ev     &= ~__LISP_EV_PAREN_OUT;
-    stack->ev         |= __STACK_POP;
 
     --lex.master.paren;
-    DB_FMT(" -> paren: %d", lex.master.paren);
+    DB_FMT(" -> paren--: %d", lex.master.paren);
 
     if (STACK_QUOT(sev)) {
 ev_paren_out_quot:
-      if (stack->typ.lex.expr) {
-        // same paren level as the function of the current literal: defer
-        // `lex.master.paren + 1' is `stack->typ.lex.paren', but we decrement it
-        if (stack->typ.lex.paren == (lex.master.paren+2)) {
-          lisp_sexp_end(sexp_pp);
-          stack->ev |= __STACK_POP;
-          defer_for_as(evret.slave, __LEX_DEFER);
+      if (stack->typ.lex.lit_expr) {
+        lisp_sexp_end(sexp_pp);
+
+        // the paren level now is the same as literal's: defer
+        if (lex.master.paren == stack->typ.lex.paren) {
+          // lisp_sexp_end_temp(sexp_pp);
+          defer_as(__LEX_DEFER);
         }
 
-        defer_for_as(evret.slave, __LEX_OK);
+        defer_as(__LEX_OK);
       }
 
       stack->ev |= __STACK_POP;
-      defer_for_as(evret.slave, __LEX_DEFER);
+      defer_as(__LEX_DEFER);
     }
+
+    stack->ev |= __STACK_POP;
 
     if (prime) {
       DB_MSG("[ == ] lex(ev): popped after prime: `()'");
@@ -230,10 +235,10 @@ ev_paren_out_quot:
       stack->ev |= __STACK_PUSH_FUNC;
     }
 
-    defer_for_as(evret.slave, __LEX_DEFER);
+    defer_as(__LEX_DEFER);
   }
 
-  done_for(evret);
+  done_for_with(evret, evret.slave = ret);
 }
 
 static inline void lisp_lex_c(char c) {
@@ -280,11 +285,8 @@ lex:
   ret = lisp_lex_bytstream(stack);
 
   // no error, no input: exit
-  if (ret == __LEX_NO_INPUT) {
-    defer_as(0);
-  }
-
-  assert(ret & (__LEX_OK | __LEX_DEFER), OR_ERR());
+  assert(ret != __LEX_NO_INPUT, 0);
+  assert(ret == __LEX_OK || ret == __LEX_DEFER, OR_ERR());
 
   /** NOTE: these are the only callbacks issued by `lisp_lex_bytstream'
             that `parse_bytstream_stack' can handle, the rest are handled
@@ -324,7 +326,8 @@ lex:
 int lisp_lex_bytstream(struct lisp_stack* stack) {
   static bool prime = false;
 
-  int  ret  = 0;
+  register int ret  = 0;
+
   uint size = 0;
 
   struct lisp_lex_ev_ret evret = {0};
@@ -337,28 +340,31 @@ feed:
     assert(lex.slave == 0, OR_ERR());
 
     evret = lisp_lex_handle_ev(lex.master.ev, stack, prime, i);
-    prime = evret.master;
 
-    if (evret.slave < __LEX_OK) {
-      defer_as(evret.slave);
+    prime = evret.master;
+    ret   = evret.slave;
+
+    if (ret < __LEX_OK) {
+      defer();
     }
 
-    assert_for(evret.slave == __LEX_OK, OR_ERR(), lex.slave);
+    assert(ret == __LEX_OK, OR_ERR());
   }
 
   if (size == 0) {
-    if (lex.master.ev & __LISP_EV_SYMBOL_IN) {
+    if (LEX_SYMBOL_IN(lex.master.ev)) {
       lisp_lex_ev(__LISP_EV_SYMBOL_OUT);
 
       evret = lisp_lex_handle_ev(lex.master.ev, stack, prime,
                                  lex.master.cb_idx);
       prime = evret.master;
+      ret   = evret.slave;
 
-      if (evret.slave < __LEX_OK) {
-        defer_as(evret.slave);
+      if (ret < __LEX_OK) {
+        defer();
       }
 
-      assert_for(evret.slave == __LEX_OK, OR_ERR(), lex.slave);
+      assert(ret == __LEX_OK, OR_ERR());
     }
 
     assert(lex.master.paren == __LEX_OK, err(EIMBALANCED));
@@ -378,14 +384,17 @@ int parse_bytstream(int fd) {
 
   struct lisp_stack stack;
 
-  stack.typ.lex.expr = false;
-  stack.typ.lex.over = false;
+  lex.master.paren       = 0;
+  lex.master.ev          = 0;
+  lex.slave              = 0;
 
-  lex.master.ev = 0;
-  lex.slave     = 0;
+  stack.ev               = 0;
+  stack.typ.lex.lit_expr = false;
+  stack.typ.lex.lazy     = NULL;
+  stack.typ.lex.paren    = lex.master.paren;
 
-  // we need a stack-local `stack', so we wrap `parse_bytstream'
-  // with a `*_stack' function. this means this function does not
-  // receive or send any callbacks from/to the stack
+  /** we need a stack-local `stack', so we wrap `parse_bytstream' with a
+      `*_stack' function. this means this function (parse_bytstream) does not
+      receive or send any callbacks from/to the stack */
   return parse_bytstream_stack(&stack);
 }

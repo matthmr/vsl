@@ -31,30 +31,15 @@ void lisp_stack_sexp_pop(struct lisp_stack* stack, POOL_T* mpp,
 
 ////////////////////////////////////////////////////////////////////////////////
 
+// TODO: stub
 static void lisp_stack_lex_frame_var(struct lisp_fun_arg* const restrict reg,
                                      const struct lisp_sym* const sym) {
 
-  // TODO: stub
   switch (sym->typ) {
   case __LISP_VAR_SYM:
     break;
   case __LISP_VAR_SEXP:
     break;
-  }
-}
-
-// TODO: is this *actually* the right thing to do?
-static inline void
-lisp_stack_lex_frame_lit(struct lisp_fun_arg* const restrict reg,
-                         const struct lisp_lex_stack stack_lex) {
-
-  if (stack_lex.expr) {
-    reg->mem.sexp = stack_lex.mem.sexp;
-    reg->typ      = __LISP_VAR_SEXP;
-  }
-  else {
-    reg->mem.hash = stack_lex.mem.hash;
-    reg->typ      = __LISP_VAR_HASH;
   }
 }
 
@@ -79,23 +64,24 @@ lisp_stack_lex_frame_pop(struct lisp_fun_arg* const restrict reg,
 }
 
 
-struct lisp_fun_ret lisp_stack_lex_frame(struct lisp_stack* stackp) {
+// TODO: refactor the expression yielding to its own function
+struct lisp_fun_ret lisp_stack_lex_frame(struct lisp_stack* f_stack) {
   int ret = 0;
 
   enum lisp_stack_ev ev    = {0};
   struct lisp_fun_arg* reg = NULL;
+  struct lisp_stack* stack = NULL;
+  struct lisp_frame frame  = {0};
 
-  DB_MSG_SAFE("[ == ] stack(lex): stack push frame");
+  DB_MSG_SAFE("[ == ] stack(lex): push frame");
 
-  struct lisp_frame frame = {0};
+  frame.sym.p = lisp_symtab_get(f_stack->typ.lex.mem.hash);
+  assert(frame.sym.p.slave == 0, OR_ERR());
 
-  frame.sym.p = lisp_symtab_get(stackp->typ.lex.mem.hash);
-
-  frame.stack = *stackp;
+  frame.stack = *f_stack;
+  stack       = &frame.stack;
   frame.reg.i = 0;
 
-  // give the parent error precedence over `EISNOTFUNC'
-  assert(frame.sym.p.slave == 0, OR_ERR());
   assert(frame.sym.p.master->typ == __LISP_VAR_FUN &&
          frame.sym.p.master->dat != NULL,
          err(EISNOTFUNC));
@@ -118,12 +104,14 @@ struct lisp_fun_ret lisp_stack_lex_frame(struct lisp_stack* stackp) {
   DB_FMT("[ == ] stack(lex): stack on argp[%d]", IDX_MH(frame.reg.i));
 
   // called with pop event still set: it must've been `()'
-  if (STACK_POPPED(stackp->ev)) {
+  if (STACK_POPPED(f_stack->ev)) {
     DB_MSG_SAFE("[ == ] stack(lex): immediate pop");
     goto pop;
   }
 
 yield:
+
+  // yield literal:
   if ((frame.reg.i + 1) >= frame.sym.m.litr[0] &&
       (frame.sym.m.litr[1] == INFINITY ||
        (frame.reg.i + 1) <= frame.sym.m.litr[1])) {
@@ -131,18 +119,28 @@ yield:
 
     DB_MSG_SAFE("[ == ] stack(lex): on literal");
 
-    ret = lisp_lex_bytstream(&frame.stack);
+    ret = lisp_lex_bytstream(stack);
     ev  = frame.stack.ev;
 
-    assert(ret & (__LEX_OK | __LEX_DEFER), OR_ERR());
+    assert(ret == __LEX_OK || ret == __LEX_DEFER, OR_ERR());
 
-    // TODO: implement this
-    if (frame.sym.m.litr[0] != 0 && frame.reg.i >= frame.sym.m.litr[0]) {
-      DB_MSG_SAFE("[ == ] stack(lex): stack push literal [masked]");
-      frame.stack.typ.lex.over = true;
-      exit(0);
-    }
-    else {
+    // NOTE: `::lit_expr` *doesn't* trigger `PUSH_VAR`
+    if (STACK_PUSHED_VAR(ev) || stack->typ.lex.lit_expr) {
+
+      /** literal range is disjoint/infinite: save the memory a temporary SEXP
+          tree; lazily evaluated
+       */
+      if (frame.sym.m.litr[0] != 0 && frame.reg.i >= frame.sym.m.litr[0]) {
+        DB_MSG_SAFE("[ == ] stack(lex): stack push literal [masked]");
+
+        ret = lisp_sexp_node_add(sexp_pp);
+        assert(ret == 0, OR_ERR());
+
+        if (!frame.stack.typ.lex.lazy) {
+          frame.stack.typ.lex.lazy = lisp_sexp_get_head();
+        }
+      }
+
       DB_MSG_SAFE("[ == ] stack(lex): stack push literal");
 
       if (frame.sym.m.litr[1] != INFINITY &&
@@ -150,9 +148,22 @@ yield:
         defer_as(err(EARGTOOBIG));
       }
 
-      lisp_stack_lex_frame_lit(reg, frame.stack.typ.lex);
+      if (frame.stack.typ.lex.lazy) {
+        goto yield;
+      }
+
+      if (stack->typ.lex.lit_expr) {
+        stack->typ.lex.lit_expr = false;
+        reg->mem.sexp = stack->typ.lex.mem.sexp;
+        reg->typ      = __LISP_VAR_SEXP;
+      }
+      else {
+        frame.stack.ev &= ~__STACK_PUSHED_VAR;
+        reg->mem.hash   = stack->typ.lex.mem.hash;
+        reg->typ        = __LISP_VAR_HASH;
+      }
+
       ++reg, ++frame.reg.i;
-      frame.stack.typ.lex.expr = false;
     }
 
     if (STACK_POPPED(ev)) {
@@ -160,8 +171,6 @@ yield:
       goto pop;
     }
 
-    // better to check in the literal branch itself, instead of in every
-    // yield call
     if (frame.sym.m.litr[1] != INFINITY &&
         (frame.reg.i + 1) > frame.sym.m.litr[1]) {
       frame.stack.ev &= ~__STACK_LIT;
@@ -170,8 +179,10 @@ yield:
     goto yield;
   }
 
-  ret = lisp_lex_bytstream(&frame.stack);
-  assert(ret & (__LEX_OK | __LEX_DEFER), OR_ERR());
+  // yield expression:
+
+  ret = lisp_lex_bytstream(stack);
+  assert(ret == __LEX_OK || ret == __LEX_DEFER, OR_ERR());
 
   ev = frame.stack.ev;
 
@@ -182,7 +193,6 @@ yield:
     DB_FMT("[ == ] stack(lex): stack push variable argp[%d]", frame.reg.i);
 
     frame.stack.ev &= ~__STACK_PUSHED_VAR;
-    ++reg;
 
     if (frame.sym.m.size[1] != INFINITY &&
         (frame.reg.i + 1) > frame.sym.m.size[1]) {
@@ -191,11 +201,12 @@ yield:
 
     if ((frame.reg.i + 1) > frame.sym.m.size[0]) {
       DB_MSG_SAFE("[ == ] stack(lex): stack push variable [masked]");
-      if (frame.stack.typ.lex.over) {
-      }
-      else {
-        frame.stack.typ.lex.over = true;
-        exit(0);
+
+      ret = lisp_sexp_sym(sexp_pp, frame.stack.typ.lex.mem.hash);
+      assert(ret == 0, OR_ERR());
+
+      if (!frame.stack.typ.lex.lazy) {
+        frame.stack.typ.lex.lazy = lisp_sexp_get_head();
       }
     }
     else {
@@ -217,7 +228,6 @@ yield:
     DB_FMT("[ == ] stack(lex): stack push function argp[%d]", frame.reg.i);
 
     frame.stack.ev &= ~__STACK_PUSHED_FUNC;
-    ++reg;
 
     if (frame.sym.m.size[1] != INFINITY &&
         (frame.reg.i + 1) > frame.sym.m.size[1]) {
@@ -226,11 +236,16 @@ yield:
 
     if ((frame.reg.i + 1) > frame.sym.m.size[0]) {
       DB_MSG_SAFE("[ == ] stack(lex): stack push function [masked]");
-      frame.stack.typ.lex.over = true;
-      exit(0);
+
+      ret = lisp_sexp_node_add(sexp_pp);
+      assert(ret == 0, OR_ERR());
+
+      if (!frame.stack.typ.lex.lazy) {
+        frame.stack.typ.lex.lazy = lisp_sexp_get_head();
+      }
     }
     else {
-      frame.pop = lisp_stack_lex_frame(&frame.stack);
+      frame.pop = lisp_stack_lex_frame(stack);
       assert(frame.pop.slave == __LISP_FUN_OK, OR_ERR());
 
       lisp_stack_lex_frame_pop(reg, frame.pop.master);
